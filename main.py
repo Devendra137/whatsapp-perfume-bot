@@ -22,7 +22,7 @@ SYSTEM_PROMPT = """
 You are a human shop assistant working at a premium perfume store. You are texting customers on WhatsApp.
 
 CRITICAL RULES FOR YOUR TONE:
-1. Keep messages VERY short. 1 or 2 brief sentences maximum. 
+1. Keep messages short. 2-5 brief sentences maximum. 
 2. Talk exactly like a normal person texting a friend. Use casual language.
 3. DO NOT use bullet points, numbered lists, or bold text. Ever. 
 4. DO NOT sound overly enthusiastic or like a corporate customer service bot. 
@@ -135,7 +135,7 @@ async def receive_message(request: Request):
     return {"status": "ok"}
 
 # --- NEW: UPTIME ROBOT ENDPOINT ---
-@app.get("/health")
+@app.head("/health")
 def health_check():
     """Endpoint for UptimeRobot to ping every 14 mins to keep Render awake."""
     return {"status": "alive", "bot_active": BOT_ACTIVE}
