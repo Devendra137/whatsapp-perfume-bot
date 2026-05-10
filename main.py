@@ -135,6 +135,7 @@ async def receive_message(request: Request):
     return {"status": "ok"}
 
 # --- NEW: UPTIME ROBOT ENDPOINT ---
+@app.get("/health")
 @app.head("/health")
 def health_check():
     """Endpoint for UptimeRobot to ping every 14 mins to keep Render awake."""
