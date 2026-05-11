@@ -1,10 +1,12 @@
 import os
+import time
 import requests
-from google import genai  # <-- NEW SDK IMPORT
+import gspread
+from rapidfuzz import fuzz, process
+from google import genai
 from fastapi import FastAPI, Request, Query, HTTPException
 from dotenv import load_dotenv
 
-# Load the environment variables FIRST
 load_dotenv()
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
@@ -12,12 +14,109 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 OWNER_PHONE = os.getenv("OWNER_PHONE")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+BNIB_SHEET_ID = os.getenv("BNIB_SHEET_ID")
+DECANT_SHEET_ID = os.getenv("DECANT_SHEET_ID")
 
 print(f"DEBUG TOKEN: {str(WHATSAPP_TOKEN)[:15]}...")
 
-# Initialize the NEW Gemini client
+# Initialize Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# Initialize Google Sheets — two separate files
+gc = gspread.service_account(filename="service_account.json")
+bnib_sheet = gc.open_by_key(BNIB_SHEET_ID).sheet1
+decant_sheet = gc.open_by_key(DECANT_SHEET_ID).sheet1
+
+# -------------------------------------------------------
+# CACHE — refreshes every 5 mins to avoid rate limits
+# -------------------------------------------------------
+_cache = {"bnib": [], "decants": [], "last_updated": 0}
+CACHE_TTL = 300
+
+UNAVAILABLE_MARKERS = {"---", "❌", "—", ""}
+
+def is_unavailable(val: str) -> bool:
+    return val.strip() in UNAVAILABLE_MARKERS
+
+def refresh_cache():
+    now = time.time()
+    if now - _cache["last_updated"] > CACHE_TTL:
+        try:
+            _cache["bnib"] = bnib_sheet.get_all_records()
+            _cache["decants"] = decant_sheet.get_all_records()
+            _cache["last_updated"] = now
+            print("✅ Sheet cache refreshed")
+        except Exception as e:
+            print(f"❌ Cache refresh error: {e}")
+
+def search_inventory(query: str) -> str:
+    """
+    Fuzzy searches both sheets for the perfume name.
+    Returns a context string to inject into the Gemini prompt.
+    """
+    refresh_cache()
+    results = []
+
+    # --- Search BNIB sheet ---
+    # Headers: brand | perfume | prices | inspired by
+    bnib_names = [
+        f"{r.get('BRAND', '')} {r.get('PERFUME', '')}".strip()
+        for r in _cache["bnib"]
+    ]
+    bnib_match = process.extractOne(
+        query, bnib_names, scorer=fuzz.partial_ratio, score_cutoff=65
+    )
+    if bnib_match:
+        idx = bnib_names.index(bnib_match[0])
+        r = _cache["bnib"][idx]
+        price = str(r.get("PRICE", "")).strip()
+        inspired = r.get("INSPIRE BY", "")
+
+        if is_unavailable(price):
+            results.append(
+                f"BNIB | {bnib_match[0]} (inspired by {inspired}) | OUT OF STOCK"
+            )
+        else:
+            results.append(
+                f"BNIB | {bnib_match[0]} (inspired by {inspired}) | Price: {price} | IN STOCK"
+            )
+
+    # --- Search Decant sheet ---
+    # Headers: decants | 8ml price | 20ml price
+    decant_names = [
+        str(r.get("Decants", "")).strip()
+        for r in _cache["decants"]
+    ]
+    decant_match = process.extractOne(
+        query, decant_names, scorer=fuzz.partial_ratio, score_cutoff=65
+    )
+    if decant_match:
+        idx = decant_names.index(decant_match[0])
+        r = _cache["decants"][idx]
+        p8  = str(r.get("8ml Price",  "")).strip()
+        p20 = str(r.get("20ml Price", "")).strip()
+
+        avail_8  = not is_unavailable(p8)
+        avail_20 = not is_unavailable(p20)
+
+        if avail_8 or avail_20:
+            parts = []
+            if avail_8:  parts.append(f"8ml: {p8}")
+            if avail_20: parts.append(f"20ml: {p20}")
+            results.append(
+                f"Decant | {decant_match[0]} | {', '.join(parts)} | IN STOCK"
+            )
+        else:
+            results.append(
+                f"Decant | {decant_match[0]} | OUT OF STOCK"
+            )
+
+    return "\n".join(results) if results else ""
+
+
+# -------------------------------------------------------
+# SYSTEM PROMPT
+# -------------------------------------------------------
 SYSTEM_PROMPT = """
 You are Zara, a human shop assistant at a premium perfume boutique. You text customers on WhatsApp like a real person — casual, warm, and genuinely knowledgeable about fragrances.
 
@@ -29,13 +128,18 @@ FORMATTING RULES (strict):
 - Never say "Great question!", "Absolutely!", "Hope that helps!", "Of course!" or any corporate filler. Ever.
 - Never end with a sign-off line. Just stop naturally.
 
+STOCK & PRICE RULES:
+- If INVENTORY CONTEXT is provided below, use it to mention price and availability naturally in your reply.
+- If the item is OUT OF STOCK, say so honestly but casually. Suggest a decant alternative if BNIB is out, or vice versa.
+- If no inventory context is provided, do NOT make up prices or stock status. Just answer normally.
+- Mention prices conversationally, not like a price tag. Example: "the 8ml decant is X, pretty good deal honestly"
+
 RESPONSE TYPES:
 
 1. RECOMMENDATIONS (when asked "suggest me", "what should I try", "perfumes for X"):
    - Start with one short casual line, then list at least 5 perfumes.
    - Each perfume on a new line, numbered, with a dash and one casual sentence about it.
    - After the list, add one line of your personal opinion on which you'd pick.
-   - Never end with a sign-off.
 
    GOOD EXAMPLE:
    "for summer i'd go with something like these
@@ -55,25 +159,11 @@ RESPONSE TYPES:
 2. COMPARISON (when asked "which is better", "compare X and Y"):
    - Compare like you're talking to a friend, not writing a review.
    - Naturally cover: scent profile, longevity, occasion, and who it suits.
-   - No lists, no tables. Just casual flowing sentences.
-   - 4-6 lines max.
-
-   GOOD EXAMPLE:
-   "both are great but pretty different. Sauvage is more of a crowd pleaser, fresh and safe for any
-   occasion but honestly a bit generic at this point. Bleu de Chanel feels more polished and mature,
-   better longevity too. if you want something versatile go Sauvage, if you want something that feels
-   a bit more refined go Bleu"
+   - No lists, no tables. Just casual flowing sentences. 4-6 lines max.
 
 3. SINGLE PERFUME QUERY (when asked "how is X", "tell me about X", "is X good"):
-   - 3-5 lines max. No more.
-   - Cover: what it smells like, who it's for, one honest opinion.
+   - 3-5 lines max. Cover: what it smells like, who it's for, one honest opinion.
    - Be real — if it's overhyped, say so nicely.
-
-   GOOD EXAMPLE:
-   "Baccarat Rouge 540 is sweet, woody and very unique — kind of a mix of amber and cedar with this
-   almost sugary edge. it's a crowd pleaser and gets a lot of compliments. honestly a bit overhyped
-   at this point but the longevity is insane, lasts all day easily. more of an evening scent though,
-   too heavy for daytime in my opinion"
 
 4. GENERAL CHAT:
    - 2-3 sentences max. Sound like a real person.
@@ -85,11 +175,15 @@ PERSONALITY:
 - Never offer to handle payments, orders, or bookings — redirect those to a human.
 """
 
+
+# -------------------------------------------------------
+# APP
+# -------------------------------------------------------
 app = FastAPI()
 BOT_ACTIVE = True
 
+
 def send_whatsapp_message(to_number: str, text: str):
-    """Sends a text message back to the user via Meta API."""
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -105,15 +199,13 @@ def send_whatsapp_message(to_number: str, text: str):
     if response.status_code != 200:
         print(f"Failed to send message: {response.text}")
 
+
 def classify_intent(text: str) -> str:
-    """
-    Simple keyword-based intent classifier. 
-    Returns 'handoff' if the user wants to buy or talk to a human.
-    """
     handoff_keywords = ["buy", "pay", "order", "purchase", "human", "agent", "refund", "complaint"]
     if any(keyword in text.lower() for keyword in handoff_keywords):
         return "handoff"
     return "bot"
+
 
 @app.get("/webhook")
 async def verify_webhook(
@@ -125,27 +217,28 @@ async def verify_webhook(
         return int(hub_challenge)
     raise HTTPException(status_code=403, detail="Verification failed")
 
+
 @app.post("/webhook")
 async def receive_message(request: Request):
-    global BOT_ACTIVE # <-- Allow modifying the global state
+    global BOT_ACTIVE
     body = await request.json()
-    
+
     try:
         if body.get("object") == "whatsapp_business_account":
             entry = body.get("entry", [])[0]
             changes = entry.get("changes", [])[0]
             value = changes.get("value", {})
-            
+
             if "messages" in value:
                 message = value["messages"][0]
                 sender_phone = message.get("from")
                 message_type = message.get("type")
-                
+
                 if message_type == "text":
                     text = message["text"]["body"]
                     print(f"[{sender_phone}] says: {text}")
-                    
-                    # --- NEW: OWNER CONTROLS ---
+
+                    # Owner controls
                     if sender_phone == OWNER_PHONE:
                         if text.strip().lower() == "#pause":
                             BOT_ACTIVE = False
@@ -155,33 +248,44 @@ async def receive_message(request: Request):
                             BOT_ACTIVE = True
                             send_whatsapp_message(OWNER_PHONE, "▶️ Bot is now ACTIVE. AI is taking over.")
                             return {"status": "ok"}
-                    
-                    # --- NEW: CHECK IF BOT IS PAUSED ---
+
                     if not BOT_ACTIVE:
                         print("Bot is paused. Ignoring message.")
                         return {"status": "ok"}
-                    
-                    # 1. Classify the intent
+
+                    # Classify intent
                     intent = classify_intent(text)
-                    
+
                     if intent == "handoff":
-                        reply_text = "I'll transfer you to a human agent to complete your order. They will message you shortly! 🛍️"
-                        
-                        # --- NEW: Notify Owner ---
-                        send_whatsapp_message(OWNER_PHONE, f"🚨 HANDOFF ALERT: Customer {sender_phone} wants to buy/talk to human.")
-                        
+                        reply_text = "i'll get a human to help you with that, they'll message you shortly"
+                        send_whatsapp_message(OWNER_PHONE, f"🚨 HANDOFF: Customer {sender_phone} wants to buy/talk to human.\nMessage: {text}")
+
                     else:
-                        # 3. Generate response
-                        prompt = f"{SYSTEM_PROMPT}\nCustomer says: {text}\nRespond as the bot:"
+                        # Search inventory
+                        inventory_context = search_inventory(text)
+
+                        if inventory_context:
+                            prompt = f"""{SYSTEM_PROMPT}
+
+INVENTORY CONTEXT (use this to answer the customer):
+{inventory_context}
+
+Customer says: {text}
+Respond as Zara:"""
+                        else:
+                            prompt = f"""{SYSTEM_PROMPT}
+
+Customer says: {text}
+Respond as Zara:"""
+
                         response = client.models.generate_content(
-                            model='gemini-2.5-flash',
+                            model="gemini-2.5-flash",
                             contents=prompt,
                         )
                         reply_text = response.text
-                    
-                    # 4. Send the reply back
+
                     send_whatsapp_message(sender_phone, reply_text)
-                    
+
     except IndexError:
         pass
     except Exception as e:
