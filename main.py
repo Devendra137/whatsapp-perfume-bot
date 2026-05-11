@@ -6,6 +6,8 @@ from rapidfuzz import fuzz, process
 from google import genai
 from fastapi import FastAPI, Request, Query, HTTPException
 from dotenv import load_dotenv
+import json
+from google.oauth2.service_account import Credentials
 
 load_dotenv()
 
@@ -23,7 +25,18 @@ print(f"DEBUG TOKEN: {str(WHATSAPP_TOKEN)[:15]}...")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Initialize Google Sheets — two separate files
-gc = gspread.service_account(filename="service_account.json")
+
+
+service_account_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT"))
+creds = Credentials.from_service_account_info(
+    service_account_info,
+    scopes=[
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ]
+)
+gc = gspread.authorize(creds)
+
 bnib_sheet = gc.open_by_key(BNIB_SHEET_ID).sheet1
 decant_sheet = gc.open_by_key(DECANT_SHEET_ID).sheet1
 
