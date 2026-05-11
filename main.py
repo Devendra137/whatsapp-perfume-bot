@@ -84,7 +84,7 @@ def search_inventory(query: str) -> str:
         for r in _cache["bnib"]
     ]
     bnib_match = process.extractOne(
-        query, bnib_names, scorer=fuzz.partial_ratio, score_cutoff=65
+        query, bnib_names, scorer=fuzz.WRatio, score_cutoff=65
     )
     if bnib_match:
         idx = bnib_names.index(bnib_match[0])
@@ -108,7 +108,7 @@ def search_inventory(query: str) -> str:
         for r in _cache["decants"]
     ]
     decant_match = process.extractOne(
-        query, decant_names, scorer=fuzz.partial_ratio, score_cutoff=65
+        query, decant_names, scorer=fuzz.WRatio, score_cutoff=65
     )
     if decant_match:
         idx = decant_names.index(decant_match[0])
