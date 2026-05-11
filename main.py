@@ -46,10 +46,17 @@ decant_sheet = gc.open_by_key(DECANT_SHEET_ID).sheet1
 _cache = {"bnib": [], "decants": [], "last_updated": 0}
 CACHE_TTL = 300
 
-UNAVAILABLE_MARKERS = {"---", "❌", "—", ""}
+UNAVAILABLE_MARKERS = {"---", "—", ""}
 
 def is_unavailable(val: str) -> bool:
-    return val.strip() in UNAVAILABLE_MARKERS
+    val = val.strip()
+    if val in UNAVAILABLE_MARKERS:
+        return True
+    if val == "-":           # single dash
+        return True
+    if "❌" in val:          # catches "740❌", "❌", "240❌" etc
+        return True
+    return False
 
 def refresh_cache():
     now = time.time()
