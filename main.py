@@ -69,70 +69,141 @@ def refresh_cache():
         except Exception as e:
             print(f"❌ Cache refresh error: {e}")
 
+# def search_inventory(query: str) -> str:
+#     """
+#     Fuzzy searches both sheets for the perfume name.
+#     Returns a context string to inject into the Gemini prompt.
+#     """
+#     refresh_cache()
+#     results = []
+
+#     # --- Search BNIB sheet ---
+#     # Headers: brand | perfume | prices | inspired by
+#     bnib_names = [
+#         f"{r.get('BRAND', '')} {r.get('PERFUME', '')}".strip()
+#         for r in _cache["bnib"]
+#     ]
+#     bnib_match = process.extractOne(
+#         query, bnib_names, scorer=fuzz.WRatio, score_cutoff=65
+#     )
+#     if bnib_match:
+#         idx = bnib_names.index(bnib_match[0])
+#         r = _cache["bnib"][idx]
+#         price = str(r.get("PRICE", "")).strip()
+#         inspired = r.get("INSPIRE BY", "")
+
+#         if is_unavailable(price):
+#             results.append(
+#                 f"BNIB | {bnib_match[0]} (inspired by {inspired}) | OUT OF STOCK"
+#             )
+#         else:
+#             results.append(
+#                 f"BNIB | {bnib_match[0]} (inspired by {inspired}) | Price: {price} | IN STOCK"
+#             )
+
+#     # --- Search Decant sheet ---
+#     # Headers: decants | 8ml price | 20ml price
+#     decant_names = [
+#         str(r.get("Decants", "")).strip()
+#         for r in _cache["decants"]
+#     ]
+#     decant_match = process.extractOne(
+#         query, decant_names, scorer=fuzz.WRatio, score_cutoff=65
+#     )
+#     if decant_match:
+#         idx = decant_names.index(decant_match[0])
+#         r = _cache["decants"][idx]
+#         p8  = str(r.get("8ml Price",  "")).strip()
+#         p20 = str(r.get("20ml Price", "")).strip()
+
+#         avail_8  = not is_unavailable(p8)
+#         avail_20 = not is_unavailable(p20)
+
+#         if avail_8 or avail_20:
+#             parts = []
+#             if avail_8:  parts.append(f"8ml: {p8}")
+#             if avail_20: parts.append(f"20ml: {p20}")
+#             results.append(
+#                 f"Decant | {decant_match[0]} | {', '.join(parts)} | IN STOCK"
+#             )
+#         else:
+#             results.append(
+#                 f"Decant | {decant_match[0]} | OUT OF STOCK"
+#             )
+
+#     return "\n".join(results) if results else ""
+
+# 1. In search_inventory, wrap the whole thing:
 def search_inventory(query: str) -> str:
-    """
-    Fuzzy searches both sheets for the perfume name.
-    Returns a context string to inject into the Gemini prompt.
-    """
-    refresh_cache()
-    results = []
+    try:
+        refresh_cache()
+        results = []
 
-    # --- Search BNIB sheet ---
-    # Headers: brand | perfume | prices | inspired by
-    bnib_names = [
-        f"{r.get('BRAND', '')} {r.get('PERFUME', '')}".strip()
-        for r in _cache["bnib"]
-    ]
-    bnib_match = process.extractOne(
-        query, bnib_names, scorer=fuzz.WRatio, score_cutoff=65
-    )
-    if bnib_match:
-        idx = bnib_names.index(bnib_match[0])
-        r = _cache["bnib"][idx]
-        price = str(r.get("PRICE", "")).strip()
-        inspired = r.get("INSPIRE BY", "")
+        bnib_names = [
+            f"{r.get('BRAND', '')} {r.get('PERFUME', '')}".strip()
+            for r in _cache["bnib"]
+        ]
+        print(f"🔍 QUERY: {query}")
+        print(f"📋 BNIB names sample: {bnib_names[:5]}")
 
-        if is_unavailable(price):
-            results.append(
-                f"BNIB | {bnib_match[0]} (inspired by {inspired}) | OUT OF STOCK"
-            )
-        else:
-            results.append(
-                f"BNIB | {bnib_match[0]} (inspired by {inspired}) | Price: {price} | IN STOCK"
-            )
+        bnib_match = process.extractOne(
+            query, bnib_names, scorer=fuzz.WRatio, score_cutoff=65
+        )
+        print(f"✅ BNIB match: {bnib_match}")
 
-    # --- Search Decant sheet ---
-    # Headers: decants | 8ml price | 20ml price
-    decant_names = [
-        str(r.get("Decants", "")).strip()
-        for r in _cache["decants"]
-    ]
-    decant_match = process.extractOne(
-        query, decant_names, scorer=fuzz.WRatio, score_cutoff=65
-    )
-    if decant_match:
-        idx = decant_names.index(decant_match[0])
-        r = _cache["decants"][idx]
-        p8  = str(r.get("8ml Price",  "")).strip()
-        p20 = str(r.get("20ml Price", "")).strip()
+        if bnib_match:
+            idx = bnib_names.index(bnib_match[0])
+            r = _cache["bnib"][idx]
+            price = str(r.get("PRICE", "")).strip()
+            inspired = r.get("INSPIRE BY", "")
+            if is_unavailable(price):
+                results.append(f"BNIB | {bnib_match[0]} (inspired by {inspired}) | OUT OF STOCK")
+            else:
+                results.append(f"BNIB | {bnib_match[0]} (inspired by {inspired}) | Price: {price} | IN STOCK")
 
-        avail_8  = not is_unavailable(p8)
-        avail_20 = not is_unavailable(p20)
+        decant_names = [
+            str(r.get("Decants", "")).strip()
+            for r in _cache["decants"]
+        ]
+        print(f"📋 Decant names sample: {decant_names[:5]}")
 
-        if avail_8 or avail_20:
-            parts = []
-            if avail_8:  parts.append(f"8ml: {p8}")
-            if avail_20: parts.append(f"20ml: {p20}")
-            results.append(
-                f"Decant | {decant_match[0]} | {', '.join(parts)} | IN STOCK"
-            )
-        else:
-            results.append(
-                f"Decant | {decant_match[0]} | OUT OF STOCK"
-            )
+        decant_match = process.extractOne(
+            query, decant_names, scorer=fuzz.WRatio, score_cutoff=65
+        )
+        print(f"✅ Decant match: {decant_match}")
 
-    return "\n".join(results) if results else ""
+        if decant_match:
+            idx = decant_names.index(decant_match[0])
+            r = _cache["decants"][idx]
+            p8  = str(r.get("8ml Price",  "")).strip()
+            p20 = str(r.get("20ml Price ", "")).strip()  # trailing space
 
+            avail_8  = not is_unavailable(p8)
+            avail_20 = not is_unavailable(p20)
+
+            if avail_8 or avail_20:
+                parts = []
+                if avail_8:  parts.append(f"8ml: {p8}")
+                if avail_20: parts.append(f"20ml: {p20}")
+                results.append(f"Decant | {decant_match[0]} | {', '.join(parts)} | IN STOCK")
+            else:
+                results.append(f"Decant | {decant_match[0]} | OUT OF STOCK")
+
+        print(f"📦 FINAL INVENTORY: {results}")
+        return "\n".join(results) if results else ""
+
+    except Exception as e:
+        print(f"❌ search_inventory ERROR: {e}")
+        return ""
+
+
+# 2. In receive_message, improve the error block:
+    except IndexError:
+        pass
+    except Exception as e:
+        import traceback
+        print(f"❌ MAIN ERROR: {e}")
+        print(traceback.format_exc())  # prints the full stack trace
 
 # -------------------------------------------------------
 # SYSTEM PROMPT
